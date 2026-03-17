@@ -22,7 +22,7 @@ app.get('/price/:symbol', async (req, res) => {
     const r = await fetch(url);
     const data = await r.json();
     const hist = data.historical || [];
-    if (!hist.length) return res.status(404).json({ error: `No price data for ${symbol} near ${date}` });
+    if (!hist.length) return res.status(404).json({ error: `No price data found for ${symbol} on FMP. This ticker may not be supported on your FMP plan.` });
     const target = new Date(date).getTime();
     hist.sort((a, b) => Math.abs(new Date(a.date) - target) - Math.abs(new Date(b.date) - target));
     res.json({ price: hist[0].close, date: hist[0].date });
@@ -66,12 +66,13 @@ app.get('/profile/:symbol', async (req, res) => {
     const r = await fetch(url);
     const data = await r.json();
     const p = Array.isArray(data) ? data[0] : data;
+    if (!p || !p.companyName) return res.status(404).json({ error: `No profile found for ${symbol} on FMP.` });
     res.json({
-      name: p?.companyName || symbol,
-      sector: p?.sector || '',
-      lastDiv: p?.lastDiv || 0,
-      price: p?.price || 0,
-      currentYield: p?.lastDiv && p?.price ? (p.lastDiv / p.price * 100).toFixed(2) : null
+      name: p.companyName || symbol,
+      sector: p.sector || '',
+      lastDiv: p.lastDiv || 0,
+      price: p.price || 0,
+      currentYield: p.lastDiv && p.price ? (p.lastDiv / p.price * 100).toFixed(2) : null
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
