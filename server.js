@@ -151,3 +151,25 @@ app.get('/screener', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`TSA server running on port ${PORT}`));
+
+// OHLC + volume history for TradingView chart
+app.get('/ohlcv/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { from, to } = req.query;
+    const url = `${BASE}/historical-price-full/${symbol}?from=${from}&to=${to}&apikey=${FMP_KEY}`;
+    const r = await fetch(url);
+    const data = await r.json();
+    const hist = (data.historical || []).sort((a, b) => new Date(a.date) - new Date(b.date));
+    if (!hist.length) return res.status(404).json({ error: `No OHLCV data for ${symbol}` });
+    const ohlcv = hist.map(d => ({
+      time: d.date,
+      open: d.open,
+      high: d.high,
+      low: d.low,
+      close: d.close,
+      volume: d.volume || 0
+    }));
+    res.json({ symbol, ohlcv });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
