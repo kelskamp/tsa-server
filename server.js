@@ -77,5 +77,45 @@ app.get('/profile/:symbol', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Dynamic dividend stock screener by sector
+app.get('/screener', async (req, res) => {
+  try {
+    const { sector, exchange } = req.query;
+    // FMP sector names differ slightly from our labels - map them
+    const sectorMap = {
+      'Healthcare':        'Healthcare',
+      'Consumer Staples':  'Consumer Defensive',
+      'Consumer Disc.':    'Consumer Cyclical',
+      'Industrials':       'Industrials',
+      'Technology':        'Technology',
+      'Financials':        'Financial Services',
+      'Energy':            'Energy',
+      'Utilities':         'Utilities',
+      'Telecom':           'Communication Services',
+      'REITs':             'Real Estate',
+      'Materials':         'Basic Materials',
+    };
+    const fmpSector = sectorMap[sector] || sector;
+    // Get all stocks in sector that pay dividends (lastDiv > 0)
+    const url = `${BASE}/stock-screener?dividendMoreThan=0&sector=${encodeURIComponent(fmpSector)}&exchange=NYSE,NASDAQ,AMEX&limit=500&apikey=${FMP_KEY}`;
+    const r = await fetch(url);
+    const data = await r.json();
+    if (!Array.isArray(data)) return res.status(500).json({ error: 'Unexpected FMP response', raw: data });
+    // Map to our format
+    const stocks = data
+      .filter(s => s.symbol && s.lastAnnualDividend > 0)
+      .map(s => ({
+        symbol: s.symbol,
+        name: s.companyName || s.symbol,
+        sector: sector,
+        lastDiv: s.lastAnnualDividend || 0,
+        price: s.price || 0,
+        marketCap: s.marketCap || 0,
+      }))
+      .sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0)); // largest first
+    res.json({ sector, fmpSector, count: stocks.length, stocks });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`TSA server running on port ${PORT}`));
