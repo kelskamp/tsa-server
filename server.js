@@ -143,10 +143,25 @@ app.get('/screener', async (req, res) => {
     if (!Array.isArray(data)) return res.status(500).json({ error: 'Unexpected FMP response' });
     const stocks = data
       .filter(s => s.symbol && s.lastAnnualDividend > 0)
-      .map(s => ({ symbol: s.symbol, name: s.companyName || s.symbol, sector, lastDiv: s.lastAnnualDividend || 0, price: s.price || 0, marketCap: s.marketCap || 0 }))
-      .map(s => ({ ...s, divYield: s.price > 0 ? (s.lastAnnualDividend / s.price) * 100 : 0 }))
-      .sort((a, b) => b.divYield - a.divYield);  // Sort by dividend yield descending
-    res.json({ sector, fmpSector, count: stocks.length, stocks: stocks.slice(0, 15) });
+      // ETFs, CEFs, income funds only — exclude plain company stocks
+      .filter(s => {
+        const name = (s.companyName || '').toLowerCase();
+        return s.isEtf === true || s.isFund === true ||
+          name.includes('etf') || name.includes('fund') || name.includes('trust') ||
+          name.includes('income') || name.includes('yield') || name.includes('strategy') ||
+          name.includes('portfolio') || name.includes('reit') || name.includes('bdc');
+      })
+      .map(s => ({
+        symbol: s.symbol,
+        name: s.companyName || s.symbol,
+        sector,
+        lastDiv: s.lastAnnualDividend || 0,
+        price: s.price || 0,
+        divYield: s.price > 0 ? (s.lastAnnualDividend / s.price) * 100 : 0
+      }))
+      .sort((a, b) => b.divYield - a.divYield)  // Highest yield first
+      .slice(0, 15);
+    res.json({ sector, fmpSector, count: stocks.length, stocks });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
