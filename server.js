@@ -165,6 +165,123 @@ app.get('/screener', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Bundled analysis — profile + start/end price + drawdown + volatility + dividends in one response.
+// Replaces 5 separate client calls (/profile, /price x2, /history, /dividends) with 1.
+// Internally fetches 3 FMP endpoints in parallel.
+app.get('/analyze/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ error: 'Missing from/to query params (YYYY-MM-DD).' });
+    }
+
+    // Buffer the price-history window so we can find a close trading day for the start/end dates.
+    const fromD = new Date(from), toD = new Date(to);
+    const fromBuf = new Date(fromD); fromBuf.setDate(fromBuf.getDate() - 10);
+    const toBuf   = new Date(toD);   toBuf.setDate(toBuf.getDate() + 10);
+    const fromBufStr = fromBuf.toISOString().split('T')[0];
+    const toBufStr   = toBuf.toISOString().split('T')[0];
+
+    const [profileR, histR, divR] = await Promise.all([
+      fetch(`${BASE}/profile/${symbol}?apikey=${FMP_KEY}`),
+      fetch(`${BASE}/historical-price-full/${symbol}?from=${fromBufStr}&to=${toBufStr}&apikey=${FMP_KEY}`),
+      fetch(`${BASE}/historical-price-full/stock_dividend/${symbol}?apikey=${FMP_KEY}`)
+    ]);
+
+    const [profileData, histData, divData] = await Promise.all([
+      profileR.json().catch(() => ({})),
+      histR.json().catch(() => ({})),
+      divR.json().catch(() => ({}))
+    ]);
+
+    const p = Array.isArray(profileData) ? profileData[0] : profileData;
+    if (!p || !p.companyName) {
+      return res.status(404).json({ error: `No profile found for ${symbol} on FMP.`, code: 'NO_PROFILE' });
+    }
+
+    const hist = (histData.historical || []).sort((a, b) => new Date(a.date) - new Date(b.date));
+    if (!hist.length) {
+      return res.status(404).json({ error: `No price history for ${symbol} in window.`, code: 'NO_HISTORY' });
+    }
+
+    // Closest trading day to start / end target.
+    const fromMs = fromD.getTime(), toMs = toD.getTime();
+    let startBar = hist[0], startDelta = Math.abs(new Date(startBar.date).getTime() - fromMs);
+    let endBar   = hist[hist.length - 1], endDelta = Math.abs(new Date(endBar.date).getTime() - toMs);
+    for (const bar of hist) {
+      const t = new Date(bar.date).getTime();
+      const sd = Math.abs(t - fromMs); if (sd < startDelta) { startBar = bar; startDelta = sd; }
+      const ed = Math.abs(t - toMs);   if (ed < endDelta)   { endBar = bar; endDelta = ed; }
+    }
+
+    // Drawdown + volatility computed over bars in [from, to] only.
+    const inRange = hist.filter(bar => {
+      const t = new Date(bar.date).getTime();
+      return t >= fromMs && t <= toMs;
+    });
+    const prices = inRange.map(b => b.close);
+    let maxDrawdown = 0;
+    if (prices.length) {
+      let peak = prices[0];
+      for (const pr of prices) {
+        if (pr > peak) peak = pr;
+        const dd = (pr - peak) / peak * 100;
+        if (dd < maxDrawdown) maxDrawdown = dd;
+      }
+    }
+    let volatility = 0;
+    if (prices.length > 1) {
+      const logRet = [];
+      for (let i = 1; i < prices.length; i++) logRet.push(Math.log(prices[i] / prices[i - 1]));
+      if (logRet.length > 1) {
+        const mean = logRet.reduce((a, b) => a + b, 0) / logRet.length;
+        const variance = logRet.reduce((a, r) => a + Math.pow(r - mean, 2), 0) / (logRet.length - 1);
+        volatility = Math.sqrt(variance) * Math.sqrt(252) * 100;
+      }
+    }
+
+    // Dividends in [from, to].
+    const divs = divData.historical || [];
+    const inRangeDivs = divs.filter(d => {
+      const dt = new Date(d.paymentDate || d.date).getTime();
+      return dt >= fromMs && dt <= toMs;
+    });
+    const dividendTotal = inRangeDivs.reduce((a, d) => a + (parseFloat(d.dividend) || 0), 0);
+    const dividendPerPayment = inRangeDivs.length > 0 ? dividendTotal / inRangeDivs.length : 0;
+    let dividendFrequency = 'Quarterly';
+    if (inRangeDivs.length > 2) {
+      const sortedDivs = inRangeDivs.map(d => new Date(d.paymentDate || d.date)).sort((a, b) => a - b);
+      const gaps = [];
+      for (let i = 1; i < sortedDivs.length; i++) gaps.push((sortedDivs[i] - sortedDivs[i - 1]) / 86400000);
+      const avg = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+      dividendFrequency = avg < 45 ? 'Monthly' : avg > 200 ? 'Annually' : 'Quarterly';
+    }
+
+    res.json({
+      symbol,
+      name: p.companyName || symbol,
+      sector: p.sector || '',
+      lastDiv: p.lastDiv || 0,
+      price: p.price || 0,
+      currentYield: p.lastDiv && p.price ? parseFloat((p.lastDiv / p.price * 100).toFixed(2)) : null,
+      startPrice: startBar.close,
+      startDate: startBar.date,
+      endPrice: endBar.close,
+      endDate: endBar.date,
+      maxDrawdown: parseFloat(maxDrawdown.toFixed(2)),
+      volatility: parseFloat(volatility.toFixed(2)),
+      dataPoints: prices.length,
+      dividendTotal,
+      dividendFrequency,
+      dividendCount: inRangeDivs.length,
+      dividendPerPayment
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`TSA server running on port ${PORT}`));
 
