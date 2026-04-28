@@ -195,6 +195,22 @@ app.get('/analyze/:symbol', async (req, res) => {
       divR.json().catch(() => ({}))
     ]);
 
+    // Detect FMP rate-limit response so we don't mis-report it as "no profile"
+    const isFmpRateLimited = d => {
+      if (!d) return false;
+      const obj = Array.isArray(d) ? d[0] : d;
+      const msg = (obj && obj['Error Message']) || d['Error Message'] || '';
+      return typeof msg === 'string' && (msg.toLowerCase().includes('limit reach') || msg.toLowerCase().includes('rate limit'));
+    };
+    if (isFmpRateLimited(profileData) || isFmpRateLimited(histData) || isFmpRateLimited(divData)) {
+      const fmpMsg = (profileData && profileData['Error Message']) || (histData && histData['Error Message']) || (divData && divData['Error Message']) || 'Rate limit reached';
+      return res.status(429).json({
+        error: 'FMP rate limit reached. Try a smaller universe or wait ~60 seconds.',
+        code: 'RATE_LIMITED',
+        fmpMessage: fmpMsg
+      });
+    }
+
     const p = Array.isArray(profileData) ? profileData[0] : profileData;
     if (!p || !p.companyName) {
       return res.status(404).json({ error: `No profile found for ${symbol} on FMP.`, code: 'NO_PROFILE' });
