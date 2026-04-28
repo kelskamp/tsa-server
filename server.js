@@ -107,8 +107,14 @@ app.get('/profile/:symbol', async (req, res) => {
     const url = `${BASE}/profile/${symbol}?apikey=${FMP_KEY}`;
     const r = await fetch(url);
     const data = await r.json();
-    const p = Array.isArray(data) ? data[0] : data;
-    if (!p || !p.companyName) return res.status(404).json({ error: `No profile found for ${symbol} on FMP.` });
+    // Detect FMP rate-limit response so callers don't mistake it for "no profile"
+    const obj = Array.isArray(data) ? data[0] : data;
+    const fmpErr = (obj && obj['Error Message']) || (data && data['Error Message']) || '';
+    if (typeof fmpErr === 'string' && (fmpErr.toLowerCase().includes('limit reach') || fmpErr.toLowerCase().includes('rate limit'))) {
+      return res.status(429).json({ error: 'FMP rate limit reached.', code: 'RATE_LIMITED', fmpMessage: fmpErr });
+    }
+    const p = obj;
+    if (!p || !p.companyName) return res.status(404).json({ error: `No profile found for ${symbol} on FMP.`, code: 'NO_PROFILE' });
     res.json({
       name: p.companyName || symbol,
       sector: p.sector || '',
